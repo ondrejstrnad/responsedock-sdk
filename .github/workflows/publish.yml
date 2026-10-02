@@ -1,0 +1,166 @@
+name: Publish SDKs
+
+# One manual run publishes the selected SDKs from main, sdk-browser before sdk-react, with npm provenance.
+# Auth: npm trusted publishing (OIDC) once a trusted publisher is configured for the package on npmjs.com;
+# otherwise the NPM_TOKEN secret, which is needed only for a package's very first publish. See RELEASING.md.
+
+on:
+  workflow_dispatch:
+    inputs:
+      packages:
+        description: "SDKs to publish (sdk-browser always goes first)"
+        required: true
+        type: choice
+        default: both
+        options:
+          - both
+          - sdk-browser
+          - sdk-react
+      confirmation:
+        description: "Type publish @responsedock sdks to confirm"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write # npm trusted publishing and provenance
+
+concurrency:
+  group: publish-sdks
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Verify and publish SDKs
+    if: inputs.confirmation == 'publish @responsedock sdks' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: npm
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup Node and npm registry
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
+      - name: Install npm with trusted publishing support
+        # Trusted publishing needs npm >= 11.5.1.
+        run: |
+          npm install --global npm@11.21.0
+          npm --version
+
+      - name: Setup pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.0.0 --activate
+
+      - name: Install dependencies
+        # No cache and no dependency lifecycle scripts in a job that can mint npm credentials.
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Select packages
+        id: select
+        env:
+          SELECTION: ${{ inputs.packages }}
+        run: |
+          case "$SELECTION" in
+            both) packages="sdk-browser sdk-react" ;;
+            sdk-browser|sdk-react) packages="$SELECTION" ;;
+            *) echo "::error::Unknown package selection: $SELECTION"; exit 1 ;;
+          esac
+          echo "packages=$packages" >> "$GITHUB_OUTPUT"
+
+      - name: Typecheck SDKs
+        run: pnpm typecheck
+
+      - name: Build SDKs
+        run: |
+          pnpm --filter @responsedock/sdk-browser build
+          pnpm --filter @responsedock/sdk-react build
+
+      - name: Test browser SDK
+        run: pnpm --filter @responsedock/sdk-browser test
+
+      - name: Test React SDK
+        run: pnpm --filter @responsedock/sdk-react test
+
+      - name: Verify installable browser package
+        run: pnpm --filter @responsedock/sdk-browser package:check
+
+      - name: Pack and smoke-test publishable tarballs
+        id: pack
+        run: node scripts/sdk-publish-preflight.mjs --out "$RUNNER_TEMP/sdk-tarballs"
+
+      - name: Confirm packed React SDK has no workspace protocol
+        env:
+          TARBALL: ${{ steps.pack.outputs.sdk-react }}
+        run: |
+          tar -xOzf "$TARBALL" package/package.json > "$RUNNER_TEMP/sdk-react-package.json"
+          if grep -q '"workspace:' "$RUNNER_TEMP/sdk-react-package.json"; then
+            echo "::error::Packed @responsedock/sdk-react still contains workspace: dependency ranges"
+            exit 1
+          fi
+          grep '"@responsedock/sdk-browser"' "$RUNNER_TEMP/sdk-react-package.json"
+
+      - name: Publish to npm
+        env:
+          PACKAGES: ${{ steps.select.outputs.packages }}
+          TARBALL_DIR: ${{ runner.temp }}/sdk-tarballs
+          # Fallback for a package's first publish only; npm prefers OIDC trusted publishing when it is configured.
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          manifest_field() { tar -xOzf "$1" package/package.json | node -p "JSON.parse(require('fs').readFileSync(0, 'utf8'))$2"; }
+
+          # Succeeds when the exact version is on npm; a 404 means it is not; other registry errors fail the run.
+          on_npm() {
+            local found
+            if found=$(npm view "$1" version 2>"$RUNNER_TEMP/npm-view.log"); then
+              [ -n "$found" ]
+              return
+            fi
+            if grep -q E404 "$RUNNER_TEMP/npm-view.log"; then return 1; fi
+            cat "$RUNNER_TEMP/npm-view.log" >&2
+            exit 1
+          }
+
+          if [ -z "$NODE_AUTH_TOKEN" ]; then
+            echo "NPM_TOKEN is not set; publishing relies on npm trusted publishing (OIDC)."
+          fi
+
+          for sdk in $PACKAGES; do
+            tarball="$TARBALL_DIR/$sdk.tgz"
+            name=$(manifest_field "$tarball" .name)
+            version=$(manifest_field "$tarball" .version)
+
+            if on_npm "$name@$version"; then
+              echo "::notice::$name@$version is already on npm; skipping."
+              echo "- $name@$version: already published, skipped" >> "$GITHUB_STEP_SUMMARY"
+              continue
+            fi
+
+            if [ "$sdk" = "sdk-react" ]; then
+              # sdk-react must never reach npm before the sdk-browser version it depends on.
+              dependency=$(manifest_field "$tarball" ".dependencies['@responsedock/sdk-browser']")
+              for attempt in 1 2 3 4 5 6 7 8 9 10 11 12; do
+                if on_npm "@responsedock/sdk-browser@$dependency"; then break; fi
+                if [ "$attempt" = 12 ]; then
+                  echo "::error::@responsedock/sdk-browser@$dependency is not on npm; publish sdk-browser first."
+                  exit 1
+                fi
+                sleep 10
+              done
+            fi
+
+            if ! npm publish "$tarball" --access public --provenance; then
+              echo "::error::Publishing $name@$version failed. Without a trusted publisher for $name on npmjs.com, the NPM_TOKEN secret must hold a publish token (see RELEASING.md)."
+              exit 1
+            fi
+            echo "- $name@$version: published" >> "$GITHUB_STEP_SUMMARY"
+          done

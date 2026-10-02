@@ -1,0 +1,11 @@
+{
+  "$schema": "https://unpkg.com/@changesets/config@3.1.2/schema.json",
+  "changelog": ["@changesets/changelog-github", { "repo": "ondrejstrnad/responsedock-sdk" }],
+  "commit": false,
+  "fixed": [],
+  "linked": [["@responsedock/sdk-browser", "@responsedock/sdk-react"]],
+  "access": "public",
+  "baseBranch": "main",
+  "updateInternalDependencies": "patch",
+  "ignore": []
+}

@@ -1,0 +1,14 @@
+node_modules/
+dist/
+coverage/
+.tarballs/
+*.tgz
+*.log
+.env
+.env.*
+.DS_Store
+.idea/
+.vscode/
+
+# Always track CI configuration, even where a global gitignore excludes .github.
+!/.github/

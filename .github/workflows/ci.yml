@@ -1,0 +1,57 @@
+name: CI
+
+# Runs on every pull request and on pushes to main.
+# The Release SDKs pull request is pushed by the Release workflow with GITHUB_TOKEN, and GitHub does not
+# start workflows for pushes or pull requests made with that token. The Release workflow therefore
+# dispatches this workflow on the changeset-release branch so the release PR's head commit still gets
+# checks. The push trigger below covers anyone who pushes to that branch by hand.
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - 'changeset-release/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  verify:
+    name: Verify SDKs
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup workspace
+        uses: ./.github/actions/setup-workspace
+
+      - name: Validate workflow contracts
+        run: pnpm test:ci
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Build
+        run: pnpm build
+
+      - name: Test
+        run: pnpm test
+
+      - name: Verify installable browser package
+        run: pnpm --filter @responsedock/sdk-browser package:check
+
+      - name: Pack and smoke-test publishable tarballs
+        run: node scripts/sdk-publish-preflight.mjs --out "$RUNNER_TEMP/sdk-tarballs"
