@@ -1,3 +1,5 @@
+'use client';
+
 import React, { useContext, useEffect, useRef } from 'react';
 import { ResponseDock } from '@responsedock/sdk-browser';
 import type { SdkEmbedOptions } from '@responsedock/sdk-browser';

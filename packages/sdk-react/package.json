@@ -19,31 +19,36 @@
     "responsedock"
   ],
   "engines": {
-    "node": ">=20.19"
+    "node": ">=18"
   },
-  "license": "MIT",
   "publishConfig": {
     "access": "public",
     "provenance": true
   },
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": false,
   "main": "./dist/index.js",
+  "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "files": [
     "dist",
-    "CHANGELOG.md"
+    "CHANGELOG.md",
+    "README.md",
+    "LICENSE"
   ],
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
-      "require": "./dist/index.js",
       "default": "./dist/index.js"
-    }
+    },
+    "./package.json": "./package.json"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "pnpm clean && tsc",
     "typecheck": "tsc --noEmit",
-    "test": "tsc && node --test test/*.test.mjs",
+    "test": "pnpm build && node --test test/*.test.mjs",
     "clean": "rm -rf dist"
   },
   "dependencies": {

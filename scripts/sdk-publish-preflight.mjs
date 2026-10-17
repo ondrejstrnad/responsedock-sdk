@@ -72,6 +72,15 @@ try {
     `sdk-react must depend on @responsedock/sdk-browser ${browser.manifest.version}`,
   );
 
+  // sdk-react is ESM-only (sdk-browser has no CommonJS build) and every entry point is a React client module.
+  assert.equal(react.manifest.type, 'module', 'sdk-react must be an ES module package');
+  assert.equal(react.manifest.exports?.['.']?.import, './dist/index.js', 'sdk-react must export its ESM entry');
+  assert.equal(react.manifest.exports?.['.']?.require, undefined, 'sdk-react must not advertise a CommonJS entry');
+  for (const file of [...react.files].filter((path) => /^dist\/[^/]+\.js$/.test(path))) {
+    const source = run('tar', ['-xOzf', react.tarball, `package/${file}`]);
+    assert.match(source, /^'use client';/, `sdk-react ${file} must start with the "use client" directive`);
+  }
+
   const consumer = resolve(scratch, 'consumer');
   mkdirSync(consumer);
   writeFileSync(resolve(consumer, 'package.json'), JSON.stringify({ private: true, type: 'module' }));
@@ -86,6 +95,8 @@ try {
       "import { renderToString } from 'react-dom/server';",
       "if (Reexported !== ResponseDock) throw new Error('sdk-react resolved a second copy of sdk-browser');",
       "for (const fn of [SurveyEmbed, SurveyModal, SurveyProvider, useSurvey]) if (typeof fn !== 'function') throw new Error('missing React export');",
+      "const embed = renderToString(createElement(SurveyProvider, { projectKey: 'pk_test_package', autoTrack: { pageViews: true } }, createElement(SurveyEmbed, { surveyId: 'workspace/survey' })));",
+      "if (!embed.startsWith('<div')) throw new Error('SurveyEmbed did not server-render its container: ' + embed);",
       "console.log(renderToString(createElement(SurveyProvider, { projectKey: 'pk_test_package' }, 'ok')));",
     ].join('\n'),
   ], consumer).trim();

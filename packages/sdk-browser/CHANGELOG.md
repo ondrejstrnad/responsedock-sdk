@@ -14,6 +14,12 @@
   - React: `SurveyProvider` initialises before child embeds, so a custom `surveyUrl`/`apiUrl` works; `SurveyModal` is driven by `open` and reports `onClose`/`onComplete` reliably.
   - Identity verification: `identify({ externalUserId, userHash })` forwards a backend-computed `hex(HMAC-SHA256(workspaceSecret, externalUserId))` to the survey frame so the workspace can trust browser-supplied user IDs. React: new `identity` prop on `SurveyProvider`.
 
+- Opt-in automatic triggers: `init({ autoTrack: { pageViews, exitIntent, scrollDepth, delaySeconds } })` sends `$pageview` (on load and on SPA navigation), `$exit_intent`, `$scroll_depth` (`{ depth }`) and `$time_on_page` (`{ seconds }`) through `track()`.
+- `ResponseDock.launcher({ surveyId, label, position, theme })` adds an accessible floating button that opens the survey modal and gets focus back when the modal closes.
+- Anonymous visitors get a persisted random `anonymousId`. It is sent with events and in the frame launch context so sampling and frequency caps apply to each visitor, and `reset()` clears it.
+- A survey opened by a trigger no longer replaces a survey that is already open.
+- Escape inside the survey frame closes the modal: frames now carry `rd_mode=modal|embed`, and `close_requested` with `reason: 'escape'` closes a modal with reason `escape`. Inline embeds ignore it.
+
 ## 0.1.2
 
 ### Patch Changes

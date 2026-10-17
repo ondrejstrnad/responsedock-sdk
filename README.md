@@ -5,7 +5,7 @@ Embed [ResponseDock](https://responsedock.com) surveys in your web app: inline, 
 | Package | Description | Version |
 | --- | --- | --- |
 | [`@responsedock/sdk-browser`](packages/sdk-browser) | Framework-free browser SDK. No runtime dependencies, TypeScript declarations included, safe to import during server rendering. | [![npm](https://img.shields.io/npm/v/@responsedock/sdk-browser)](https://www.npmjs.com/package/@responsedock/sdk-browser) |
-| [`@responsedock/sdk-react`](packages/sdk-react) | React 18/19 bindings: `SurveyProvider`, `SurveyEmbed`, `SurveyModal`, `useSurvey`. | [![npm](https://img.shields.io/npm/v/@responsedock/sdk-react)](https://www.npmjs.com/package/@responsedock/sdk-react) |
+| [`@responsedock/sdk-react`](packages/sdk-react) | React 18/19 bindings: `SurveyProvider`, `SurveyEmbed`, `SurveyModal`, `useSurvey`. ESM, `"use client"`, works in the Next.js App Router. | [![npm](https://img.shields.io/npm/v/@responsedock/sdk-react)](https://www.npmjs.com/package/@responsedock/sdk-react) |
 
 ## Use it
 
@@ -31,6 +31,32 @@ ResponseDock serves the browser SDK. `/sdk/0.2/` receives every 0.2.x patch rele
 npm install @responsedock/sdk-browser   # any framework
 npm install @responsedock/sdk-react     # React; installs sdk-browser too
 ```
+
+```ts
+import { ResponseDock } from '@responsedock/sdk-browser';
+
+ResponseDock.init({
+  projectKey: 'pk_live_xxxx',
+  // Optional automatic trigger events; create trigger rules for them in the dashboard.
+  autoTrack: { pageViews: true, exitIntent: true, scrollDepth: [50, 90], delaySeconds: [30] },
+});
+ResponseDock.embed('workspace/survey-slug', '#survey-root');
+ResponseDock.launcher({ surveyId: 'workspace/feedback' }); // floating feedback button
+```
+
+### React and Next.js
+
+`@responsedock/sdk-react` is an ES module marked `"use client"`, so the Next.js App Router can render its components straight from a server component such as `app/layout.tsx`:
+
+```tsx
+import { SurveyProvider, SurveyEmbed } from '@responsedock/sdk-react';
+
+<SurveyProvider projectKey="pk_live_xxxx" autoTrack={{ pageViews: true }}>
+  <SurveyEmbed surveyId="workspace/survey-slug" />
+</SurveyProvider>;
+```
+
+Call `useSurvey()` (for `track`, `show` and `identify`) from your own client components.
 
 See each package's README for usage, and the documentation for the full API:
 

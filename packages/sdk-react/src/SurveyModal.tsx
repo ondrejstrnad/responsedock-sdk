@@ -1,3 +1,5 @@
+'use client';
+
 import { useEffect, useRef } from 'react';
 import { ResponseDock } from '@responsedock/sdk-browser';
 import type { SdkCloseEvent, SdkShowOptions } from '@responsedock/sdk-browser';

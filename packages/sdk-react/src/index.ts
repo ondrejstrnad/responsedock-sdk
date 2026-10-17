@@ -1,3 +1,5 @@
+'use client';
+
 export { SurveyProvider, SurveyContext } from './SurveyProvider.js';
 export type { SurveyContextValue } from './SurveyProvider.js';
 export { useSurvey } from './useSurvey.js';

@@ -14,6 +14,9 @@
   - React: `SurveyProvider` initialises before child embeds, so a custom `surveyUrl`/`apiUrl` works; `SurveyModal` is driven by `open` and reports `onClose`/`onComplete` reliably.
   - Identity verification: `identify({ externalUserId, userHash })` forwards a backend-computed `hex(HMAC-SHA256(workspaceSecret, externalUserId))` to the survey frame so the workspace can trust browser-supplied user IDs. React: new `identity` prop on `SurveyProvider`.
 
+- Publishable release: MIT license, README, ESM-only build with correct `exports`, and a `"use client"` directive so the components work in the Next.js App Router. CommonJS consumers must switch to `import`.
+- `SurveyProvider` accepts the browser SDK's `autoTrack` option and re-initialises the SDK when it changes.
+
 ### Patch Changes
 
 - Updated dependencies [aa48b27]

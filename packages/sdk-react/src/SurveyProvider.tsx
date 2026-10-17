@@ -1,3 +1,5 @@
+'use client';
+
 import { createContext, useEffect, useMemo, useRef, type ReactNode } from 'react';
 import { ResponseDock } from '@responsedock/sdk-browser';
 import type { SdkCallbacks, SdkIdentifyPayload, SdkInitOptions, SdkModalController, SdkShowOptions } from '@responsedock/sdk-browser';
@@ -35,10 +37,11 @@ export function SurveyProvider({ children, identity, ...initOptions }: SurveyPro
     return callbacks as SdkCallbacks;
   }, []);
 
-  const { projectKey, apiUrl, surveyUrl, environment, debug, theme } = initOptions;
+  const { projectKey, apiUrl, surveyUrl, environment, debug, theme, autoTrack } = initOptions;
   const contextKeys = (initOptions.allowedContextKeys ?? []).join('\u0000');
   const themeKey = JSON.stringify(theme ?? {});
-  const configKey = [projectKey, apiUrl ?? '', surveyUrl ?? '', environment ?? '', debug ? '1' : '0', contextKeys].join('|');
+  const autoTrackKey = JSON.stringify(autoTrack ?? null);
+  const configKey = [projectKey, apiUrl ?? '', surveyUrl ?? '', environment ?? '', debug ? '1' : '0', contextKeys, autoTrackKey].join('|');
 
   // Initialise synchronously during render: child effects (e.g. <SurveyEmbed>) run
   // before this component's effects, so an effect here would be too late.
@@ -56,6 +59,7 @@ export function SurveyProvider({ children, identity, ...initOptions }: SurveyPro
       allowedContextKeys: contextKeys ? contextKeys.split('\u0000') : [],
       callbacks: stableCallbacks,
       ...(themeRef.current ? { theme: themeRef.current } : {}),
+      ...(autoTrack !== undefined ? { autoTrack } : {}),
     });
   }
 

@@ -1,5 +1,6 @@
 export { ResponseDock } from './ResponseDock.js';
 export type {
+  SdkAutoTrackOptions,
   SdkCallbacks,
   SdkCloseEvent,
   SdkCloseReason,
@@ -12,6 +13,8 @@ export type {
   SdkFrameOptions,
   SdkIdentifyPayload,
   SdkInitOptions,
+  SdkLauncherController,
+  SdkLauncherOptions,
   SdkModalController,
   SdkRedirectEvent,
   SdkResizeEvent,

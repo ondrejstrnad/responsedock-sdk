@@ -5,7 +5,7 @@ import test from 'node:test';
 import { ResponseDock } from '../dist/index.js';
 
 test('publishes the documented browser SDK surface', () => {
-  for (const method of ['init', 'identify', 'track', 'show', 'embed', 'updateTheme', 'reset']) {
+  for (const method of ['init', 'identify', 'track', 'show', 'embed', 'updateTheme', 'launcher', 'reset']) {
     assert.equal(typeof ResponseDock[method], 'function', `${method} must be exported`);
   }
 });

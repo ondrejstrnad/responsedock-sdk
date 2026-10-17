@@ -138,6 +138,46 @@ export interface SdkInitOptions {
   callbacks?: SdkCallbacks;
   /** Host branding forwarded securely to the cross-origin survey frame. */
   theme?: EmbedTheme;
+  /** Opt-in automatic events fed into the same pipeline as `track()`. Off by default. */
+  autoTrack?: SdkAutoTrackOptions;
+}
+
+/**
+ * Automatic trigger events. Each emits through `track()`, so trigger rules match them like any
+ * other event name (page properties such as `pagePath` are attached automatically).
+ */
+export interface SdkAutoTrackOptions {
+  /** `$pageview` on load and on every SPA navigation (History API and `#/` hash routes). */
+  pageViews?: boolean;
+  /** `$exit_intent` once per page when a desktop pointer leaves through the top of the viewport. */
+  exitIntent?: boolean;
+  /** `$scroll_depth` with `{ depth }` once per page for each percentage reached, e.g. `[50, 90]`. */
+  scrollDepth?: number[];
+  /** `$time_on_page` with `{ seconds }` once per page after each delay, e.g. `[30]`. */
+  delaySeconds?: number[];
+}
+
+export interface SdkLauncherOptions extends SdkShowOptions {
+  /** Survey id or `workspaceSlug/surveySlug` opened by the launcher. */
+  surveyId: string;
+  /** Visible button text. Default `"Feedback"`. */
+  label?: string;
+  /** Accessible name when it should differ from the label. */
+  ariaLabel?: string;
+  /** Corner the button floats in. Default `"bottom-right"`. */
+  position?: 'bottom-right' | 'bottom-left';
+  /** Button colours; falls back to the init() theme. */
+  theme?: Pick<EmbedTheme, 'primaryColor' | 'primaryTextColor' | 'fontFamily' | 'borderRadius'>;
+}
+
+/** Handle returned by `ResponseDock.launcher()`. */
+export interface SdkLauncherController {
+  /** The floating button, or null when no document is available (SSR). */
+  readonly button: HTMLButtonElement | null;
+  /** Open the survey modal, as a click on the button would. */
+  open: () => SdkModalController;
+  /** Remove the button (and close its modal if open). */
+  destroy: () => void;
 }
 
 export interface SdkIdentifyPayload {

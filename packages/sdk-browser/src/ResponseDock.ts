@@ -1,5 +1,6 @@
 import type {
   EmbedTheme,
+  SdkAutoTrackOptions,
   SdkCallbacks,
   SdkCloseReason,
   SdkEmbedController,
@@ -9,6 +10,8 @@ import type {
   SdkFrameOptions,
   SdkIdentifyPayload,
   SdkInitOptions,
+  SdkLauncherController,
+  SdkLauncherOptions,
   SdkModalController,
   SdkShowOptions,
   SdkSurveyMode,
@@ -26,6 +29,8 @@ interface ResponseDockState {
   /** Host-computed HMAC of externalUserId (identity verification). */
   userHash: string | null;
   traits: Record<string, string | number | boolean | null>;
+  /** Random per-browser visitor id (persisted in localStorage when available). */
+  anonymousId: string | null;
   lastEventName: string | null;
   lastEventProperties: Record<string, string | number | boolean | null>;
   lastEventContext: Record<string, string | number | boolean | null>;
@@ -44,6 +49,7 @@ const MAX_FRAME_HEIGHT = 100_000;
 const MODAL_CHROME_HEIGHT = 44;
 const MODAL_INITIAL_HEIGHT = 600;
 const LIFECYCLE = 'responsedock.lifecycle.';
+const ANONYMOUS_ID_KEY = 'responsedock.anonymousId';
 
 const state: ResponseDockState = {
   projectKey: null,
@@ -56,6 +62,7 @@ const state: ResponseDockState = {
   externalUserId: null,
   userHash: null,
   traits: {},
+  anonymousId: null,
   lastEventName: null,
   lastEventProperties: {},
   lastEventContext: {},
@@ -64,6 +71,7 @@ const state: ResponseDockState = {
 };
 
 let activeModal: SdkModalController | null = null;
+let stopAutoTrack: (() => void) | null = null;
 
 function log(...args: unknown[]): void {
   if (state.debug) {
@@ -145,6 +153,59 @@ async function request<T>(
   }
 }
 
+function randomId(): string {
+  try {
+    const bytes = new Uint8Array(16);
+    globalThis.crypto.getRandomValues(bytes);
+    return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+  } catch {
+    return `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}${Math.random().toString(36).slice(2)}`;
+  }
+}
+
+/** localStorage, or null when blocked (private mode, sandboxed frames, SSR). */
+function storage(): Storage | null {
+  try {
+    return typeof window !== 'undefined' ? window.localStorage ?? null : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Stable random id for this browser, so anonymous visitors get their own sampling cohort and
+ * frequency caps. Persisted in localStorage; kept in memory when storage is unavailable.
+ */
+function getAnonymousId(): string {
+  if (state.anonymousId) return state.anonymousId;
+  const store = storage();
+  let id: string | null = null;
+  try {
+    id = store?.getItem(ANONYMOUS_ID_KEY) ?? null;
+  } catch {
+    id = null;
+  }
+  if (!id || !/^[A-Za-z0-9_-]{8,200}$/.test(id)) {
+    id = `anon_${randomId()}`;
+    try {
+      store?.setItem(ANONYMOUS_ID_KEY, id);
+    } catch {
+      // In-memory only for this page.
+    }
+  }
+  state.anonymousId = id;
+  return id;
+}
+
+function clearAnonymousId(): void {
+  state.anonymousId = null;
+  try {
+    storage()?.removeItem(ANONYMOUS_ID_KEY);
+  } catch {
+    // Nothing persisted.
+  }
+}
+
 /**
  * Initialize the ResponseDock SDK.
  * Must be called before any other method.
@@ -158,6 +219,8 @@ function init(options: SdkInitOptions): void {
   state.debug = options.debug ?? false;
   state.callbacks = options.callbacks ?? {};
   state.theme = options.theme ?? {};
+  stopAutoTrack?.();
+  stopAutoTrack = options.autoTrack ? startAutoTrack(options.autoTrack) : null;
   log('Initialized', { projectKey: options.projectKey, environment: state.environment });
 }
 
@@ -228,6 +291,7 @@ function buildLaunchPayload(): Record<string, unknown> {
   return {
     ...(state.externalUserId ? { externalUserId: state.externalUserId } : {}),
     ...(state.externalUserId && state.userHash ? { externalUserIdHash: state.userHash } : {}),
+    anonymousId: getAnonymousId(),
     source: {
       channel: 'browser_sdk',
       pageUrl: page.pageUrl ?? null,
@@ -292,6 +356,7 @@ async function track(
 
   const payload: SdkEventPayload & {
     externalUserId?: string;
+    anonymousId?: string;
     traits?: Record<string, unknown>;
     environment?: 'PRODUCTION' | 'STAGING' | 'DEVELOPMENT';
   } = {
@@ -299,6 +364,7 @@ async function track(
     properties: eventProperties,
     context: eventContext,
     environment: normaliseEnvironment(),
+    anonymousId: getAnonymousId(),
     ...(state.externalUserId && {
       externalUserId: state.externalUserId,
       traits: state.traits,
@@ -315,11 +381,131 @@ async function track(
 
   if (result?.surveys?.length) {
     const [first] = result.surveys;
-    if (first) {
+    if (first && activeModal) {
+      // Never replace a survey the respondent is already looking at.
+      log('Trigger matched survey while another is open; skipped:', first.id);
+    } else if (first) {
       log('Trigger matched survey:', first.id);
       show(first.workspaceSlug ? `${first.workspaceSlug}/${first.slug ?? first.id}` : first.slug ?? first.id);
     }
   }
+}
+
+/** Sorted, de-duplicated numbers within [min, max]. */
+function cleanNumbers(values: unknown, min: number, max: number): number[] {
+  if (!Array.isArray(values)) return [];
+  const valid = values.filter((v): v is number => typeof v === 'number' && Number.isFinite(v) && v >= min && v <= max);
+  return [...new Set(valid.map((v) => Math.round(v)))].sort((a, b) => a - b);
+}
+
+/** Identifies a "page" for SPA navigation: path + query, plus hash routes (`#/…`, `#!…`). */
+function pageKey(): string {
+  const { pathname, search, hash } = window.location;
+  return `${pathname}${search}${/^#!?\//.test(hash ?? '') ? hash : ''}`;
+}
+
+/**
+ * Wires opt-in automatic events into track(). Per-page state (scroll thresholds, delay timers,
+ * exit intent) restarts on every SPA navigation. Returns a teardown that removes every listener
+ * and restores History methods when nothing else wrapped them afterwards.
+ */
+function startAutoTrack(options: SdkAutoTrackOptions): () => void {
+  if (typeof window === 'undefined' || typeof document === 'undefined') return () => undefined;
+  const depths = cleanNumbers(options.scrollDepth, 1, 100);
+  const delays = cleanNumbers(options.delaySeconds, 1, 86_400);
+  const cleanups: Array<() => void> = [];
+  const listen = (target: EventTarget, type: string, fn: (e: Event) => void, opts?: AddEventListenerOptions) => {
+    target.addEventListener(type, fn, opts);
+    cleanups.push(() => target.removeEventListener(type, fn, opts));
+  };
+  const emit = (event: string, properties?: Record<string, number>) => void track(event, properties);
+
+  let active = true;
+  let key = pageKey();
+  let reached = new Set<number>();
+  let exitFired = false;
+  let timers: Array<ReturnType<typeof setTimeout>> = [];
+  let scrollPending = false;
+
+  const startPage = () => {
+    reached = new Set();
+    exitFired = false;
+    timers.forEach(clearTimeout);
+    timers = delays.map((seconds) => setTimeout(() => emit('$time_on_page', { seconds }), seconds * 1000));
+    if (options.pageViews) emit('$pageview');
+  };
+  const onNavigate = () => {
+    if (!active || pageKey() === key) return;
+    key = pageKey();
+    startPage();
+  };
+
+  if (options.pageViews || depths.length || delays.length || options.exitIntent) {
+    const { history } = window;
+    const methods = ['pushState', 'replaceState'] as const;
+    for (const method of methods) {
+      const original = history?.[method];
+      if (typeof original !== 'function') continue;
+      const wrapped = function (this: History, ...args: Parameters<History['pushState']>) {
+        const result = original.apply(this, args);
+        // Let the router render (and set document.title) before reporting the new page.
+        if (active) setTimeout(onNavigate, 0);
+        return result;
+      };
+      history[method] = wrapped;
+      cleanups.push(() => {
+        if (history[method] === wrapped) history[method] = original;
+      });
+    }
+    listen(window, 'popstate', onNavigate);
+    listen(window, 'hashchange', onNavigate);
+  }
+
+  if (depths.length) {
+    const measure = () => {
+      scrollPending = false;
+      const root = document.documentElement;
+      const scrollable = Math.max(root.scrollHeight || 0, document.body?.scrollHeight || 0) - window.innerHeight;
+      if (scrollable <= 0) return;
+      const percent = Math.min(100, Math.round((window.scrollY / scrollable) * 100));
+      for (const depth of depths) {
+        if (percent < depth || reached.has(depth)) continue;
+        reached.add(depth);
+        emit('$scroll_depth', { depth });
+      }
+    };
+    listen(window, 'scroll', () => {
+      if (scrollPending) return;
+      scrollPending = true;
+      setTimeout(measure, 150);
+    }, { passive: true });
+  }
+
+  if (options.exitIntent) {
+    let finePointer = true;
+    try {
+      finePointer = window.matchMedia?.('(pointer: fine)').matches ?? true;
+    } catch {
+      finePointer = true;
+    }
+    if (finePointer) {
+      listen(document, 'mouseout', (e) => {
+        const event = e as MouseEvent;
+        if (exitFired || activeModal || event.relatedTarget || event.clientY > 0) return;
+        exitFired = true;
+        emit('$exit_intent');
+      });
+    }
+  }
+
+  // Deferred so an identify() in the same tick as init() is included in the first page view.
+  timers.push(setTimeout(startPage, 0));
+
+  return () => {
+    active = false;
+    timers.forEach(clearTimeout);
+    cleanups.forEach((cleanup) => cleanup());
+  };
 }
 
 function boundedHeight(value: unknown): number | null {
@@ -353,7 +539,8 @@ interface FrameHooks {
   /** A valid, bounded height reported by the frame. */
   onHeight: (height: number) => void;
   onCompleted?: () => void;
-  onCloseRequested?: () => void;
+  /** `reason` is the frame-supplied reason, e.g. `escape` when Escape was pressed inside the frame. */
+  onCloseRequested?: (reason: string | null) => void;
   onScrollRequest?: (top: number) => void;
 }
 
@@ -373,7 +560,7 @@ function createSurveyFrame(
   options: SdkFrameOptions,
   hooks: FrameHooks,
 ): SurveyFrame {
-  const src = buildSurveyUrl(surveyId);
+  const src = buildSurveyUrl(surveyId, mode);
   const origin = originOf(src) ?? '';
   const iframe = document.createElement('iframe');
   iframe.src = src;
@@ -456,7 +643,7 @@ function createSurveyFrame(
           complete(payload.responseId);
           break;
         case 'close_requested':
-          hooks.onCloseRequested?.();
+          hooks.onCloseRequested?.(typeof payload.reason === 'string' ? payload.reason : null);
           break;
         case 'error':
           clearTimer();
@@ -486,7 +673,7 @@ function createSurveyFrame(
     if (data.type === 'ResponseDock:survey:ready') markReady();
     if (data.type === 'responsedock.theme.ready') sendTheme(iframe, origin);
     if (data.type === 'ResponseDock:survey:completed') complete(data.responseId);
-    if (data.type === 'ResponseDock:survey:closed') hooks.onCloseRequested?.();
+    if (data.type === 'ResponseDock:survey:closed') hooks.onCloseRequested?.(null);
   };
 
   // Branding goes out as early as possible to avoid a flash of the default theme.
@@ -626,7 +813,9 @@ function show(surveyIdOrSlug: string, options: SdkShowOptions = {}): SdkModalCon
         autoCloseTimer = setTimeout(() => close('auto'), options.autoCloseAfterMs);
       }
     },
-    onCloseRequested: () => close('frame'),
+    // Focus inside the cross-origin frame never reaches our keydown listener, so the frame
+    // forwards Escape as close_requested { reason: 'escape' } (only for rd_mode=modal frames).
+    onCloseRequested: (reason) => close(reason === 'escape' ? 'escape' : 'frame'),
   });
   const { iframe } = frame;
   iframe.style.flex = '0 0 auto';
@@ -750,7 +939,9 @@ function embed(
         behavior: prefersReducedMotion() ? 'auto' : 'smooth',
       });
     },
-    onCloseRequested: () => {
+    onCloseRequested: (reason) => {
+      // Escape inside an inline survey is not a request to dismiss it.
+      if (reason === 'escape') return;
       const event = { surveyId: surveyIdOrSlug, mode: 'embed' as const, reason: 'frame' as const };
       safeCall(options.onDismiss, event);
       safeCall(state.callbacks.onDismiss, event);
@@ -770,9 +961,93 @@ function embed(
   };
 }
 
-function buildSurveyUrl(surveyIdOrSlug: string): string {
+const NOOP_LAUNCHER: SdkLauncherController = { button: null, open: () => NOOP_MODAL, destroy: () => undefined };
+
+/**
+ * A floating button that opens a survey in the modal. Focus returns to the button when the
+ * modal closes (close button, Escape, backdrop or completion).
+ */
+function launcher(options: SdkLauncherOptions): SdkLauncherController {
+  if (typeof document === 'undefined') return NOOP_LAUNCHER;
+  const { surveyId, label = 'Feedback', ariaLabel, position = 'bottom-right', theme: buttonTheme = {}, ...showOptions } = options;
+  const theme = { ...state.theme, ...buttonTheme };
+  const side = position === 'bottom-left' ? 'left' : 'right';
+  let modal: SdkModalController | null = null;
+
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.textContent = label;
+  button.setAttribute('aria-label', ariaLabel ?? label);
+  button.setAttribute('aria-haspopup', 'dialog');
+  button.setAttribute('aria-expanded', 'false');
+  button.setAttribute('data-responsedock-launcher', '');
+  Object.assign(button.style, {
+    position: 'fixed',
+    bottom: '20px',
+    [side]: '20px',
+    zIndex: '2147483646',
+    padding: '12px 18px',
+    border: '0',
+    borderRadius: theme.borderRadius !== undefined ? cssLength(theme.borderRadius) : '999px',
+    background: theme.primaryColor ?? '#2563eb',
+    color: theme.primaryTextColor ?? '#fff',
+    fontFamily: theme.fontFamily ?? 'system-ui, sans-serif',
+    fontSize: '15px',
+    fontWeight: '600',
+    lineHeight: '1',
+    boxShadow: '0 6px 20px rgba(0,0,0,0.2)',
+    cursor: 'pointer',
+  });
+
+  const open = (): SdkModalController => {
+    // Safari does not focus buttons on click; the modal restores focus to whatever had it.
+    if (button.isConnected) button.focus();
+    button.setAttribute('aria-expanded', 'true');
+    const settle = () => {
+      button.setAttribute('aria-expanded', 'false');
+      modal = null;
+    };
+    modal = show(surveyId, {
+      ...showOptions,
+      onClose: (event) => {
+        settle();
+        safeCall(showOptions.onClose, event);
+      },
+    });
+    const destroyModal = modal.destroy;
+    return {
+      iframe: modal.iframe,
+      close: modal.close,
+      destroy: () => {
+        settle();
+        destroyModal();
+      },
+    };
+  };
+  const onClick = () => void open();
+  button.addEventListener('click', onClick);
+
+  const mount = () => document.body?.appendChild(button);
+  if (document.body) mount();
+  else document.addEventListener('DOMContentLoaded', mount, { once: true });
+
+  return {
+    button,
+    open,
+    destroy: () => {
+      button.removeEventListener('click', onClick);
+      document.removeEventListener('DOMContentLoaded', mount);
+      modal?.destroy();
+      modal = null;
+      button.remove();
+    },
+  };
+}
+
+function buildSurveyUrl(surveyIdOrSlug: string, mode: SdkSurveyMode): string {
   const base = state.surveyUrl.replace(/\/$/, '');
-  const params = new URLSearchParams({ rd_sdk: '1' });
+  // rd_mode tells the frame whether it sits in a modal (and should forward Escape to close it).
+  const params = new URLSearchParams({ rd_sdk: '1', rd_mode: mode });
   // Lets the survey address the host even when the host sends no referrer.
   const hostOrigin = typeof window !== 'undefined' ? window.location.origin : '';
   if (hostOrigin && hostOrigin !== 'null') params.set('rd_origin', hostOrigin);
@@ -796,6 +1071,8 @@ function reset(): void {
   state.lastEventProperties = {};
   state.lastEventContext = {};
   state.theme = {};
+  // A new visitor id, so the next person on this device is not tied to the previous one.
+  clearAnonymousId();
   log('State reset');
 }
 
@@ -806,5 +1083,6 @@ export const ResponseDock = {
   show,
   embed,
   updateTheme,
+  launcher,
   reset,
 } as const;

@@ -105,6 +105,12 @@ test('both SDKs are publishable public MIT packages of this repository', () => {
     assert.equal(manifest.private, undefined);
   }
   assert.equal(reactPackage.dependencies['@responsedock/sdk-browser'], 'workspace:^');
+  // sdk-browser is ESM-only, so sdk-react is too: no CommonJS entry that would require() it.
+  for (const manifest of [browserPackage, reactPackage]) {
+    assert.equal(manifest.type, 'module');
+    assert.equal(manifest.exports['.'].import, './dist/index.js');
+    assert.equal(manifest.exports['.'].require, undefined);
+  }
   assert.equal(changesetConfig.access, 'public');
   assert.equal(changesetConfig.baseBranch, 'main');
   assert.deepEqual(changesetConfig.linked, [['@responsedock/sdk-browser', '@responsedock/sdk-react']]);
