@@ -29,8 +29,9 @@ try {
     assert.ok(paths.has(required), `package is missing ${required}`);
   }
   assert.ok([...paths].every((path) => !path.endsWith('.map')), 'source maps must not ship in the public package');
-  // ESM build + IIFE build + declarations; a jump past this usually means source maps or sources leaked in.
-  assert.ok(packed.size < 32_000, `package tarball is unexpectedly large (${packed.size} bytes)`);
+  // The browser SDK, auto-tracking included, must stay under 30 kB packed (ESM + IIFE builds and
+  // declarations); a jump past this usually means source maps or sources leaked in.
+  assert.ok(packed.size < 30_000, `package tarball is unexpectedly large (${packed.size} bytes)`);
 
   const manifest = JSON.parse(readFileSync(resolve(packageDir, 'package.json'), 'utf8'));
   assert.equal(manifest.type, 'module');
